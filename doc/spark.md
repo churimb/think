@@ -181,58 +181,96 @@ One important parameter for parallel collections is the number of partitions to 
 
 ## 外部数据源
 
+PySpark可以从Hadoop支持的任何存储源创建分布式数据集，包括本地文件系统，HDFS，Cassandra，HBase，Amazon S3等。Spark支持文本文件，有序文件，或其他Hadoop输入格式。
+
 PySpark can create distributed datasets from any storage source supported by Hadoop, including your local file system, HDFS, Cassandra, HBase, Amazon S3, etc. Spark supports text files, SequenceFiles, and any other Hadoop InputFormat.
+
+文本文件RDDs可以使用SparkContext的textFile方法，该方法接受文件的URI（要么是本地路径，要么是hdfs://、s3a://等URI）和将其读取为行集合。下面是一个调用示例：
 
 Text file RDDs can be created using SparkContext’s textFile method. This method takes an URI for the file (either a local path on the machine, or a hdfs://, s3a://, etc URI) and reads it as a collection of lines. Here is an example invocation:
 
+```python
 >>> distFile = sc.textFile("data.txt")
+```
+
+一旦创建，就可以通过数据集操作对distFile进行操作。例如，我们可以按如下方式使用map和reduce操作将所有行的大小相加：distFile.map(lambda s: len(s)).reduce(lambda a, b: a + b)。
+
 Once created, distFile can be acted on by dataset operations. For example, we can add up the sizes of all the lines using the map and reduce operations as follows: distFile.map(lambda s: len(s)).reduce(lambda a, b: a + b).
+
+关于使用Spark读取文件的注意事项：
 
 Some notes on reading files with Spark:
 
+如果使用在本地文件系统上路径，文件也必须在worker节点上的相同路径上可访问。要么将文件复制到所有workers，要么使用网络挂载的共享文件系统。
+
 If using a path on the local filesystem, the file must also be accessible at the same path on worker nodes. Either copy the file to all workers or use a network-mounted shared file system.
+
+Spark所有基于文件的输入方法，包括文本文件，支持目录，压缩文件，以及通配符。
+例如，您可以使用textFile("/my/directory")、textFile("/my/directory/*.txt")和textFile("/my/directory/*.gz")。
 
 All of Spark’s file-based input methods, including textFile, support running on directories, compressed files, and wildcards as well. For example, you can use textFile("/my/directory"), textFile("/my/directory/*.txt"), and textFile("/my/directory/*.gz").
 
+textFile方法同样还有可选的第二个参数来控制文件的分区数量。
+默认情况下，Spark为文件的每个块创建一个分区（块在HDFS中默认为128MB），但是您也可以通过传递更大的值来请求更多的分区。
+注意，分区不能少于块。
+
 The textFile method also takes an optional second argument for controlling the number of partitions of the file. By default, Spark creates one partition for each block of the file (blocks being 128MB by default in HDFS), but you can also ask for a higher number of partitions by passing a larger value. Note that you cannot have fewer partitions than blocks.
+
+除了文本文件，Spark的Python API还支持其他几种数据格式:
 
 Apart from text files, Spark’s Python API also supports several other data formats:
 
+SparkContext.wholeTextFiles允许您读取包含多个小文本文件的目录，并将它们作为(filename, content)对返回。
+这与textFile形成对比，后者将在每个文件中每行返回一条记录。
+
 SparkContext.wholeTextFiles lets you read a directory containing multiple small text files, and returns each of them as (filename, content) pairs. This is in contrast with textFile, which would return one record per line in each file.
+
+RDD.saveAsPickleFile和SparkContext.pickleFile支持以包含特制的Python对象的简单格式保存RDD。
+批处理用于pickle序列化，默认批大小为10。
 
 RDD.saveAsPickleFile and SparkContext.pickleFile support saving an RDD in a simple format consisting of pickled Python objects. Batching is used on pickle serialization, with default batch size 10.
 
-SequenceFile and Hadoop Input/Output Formats
+## SequenceFile和Hadoop输入/输出格式
+
+注意，这个特性目前被标记为实验性的，并且是为高级用户准备的。
+将来它可能会被基于Spark SQL的读/写支持所替代，在这种情况下，Spark SQL是首选的方法。
 
 Note this feature is currently marked Experimental and is intended for advanced users. It may be replaced in future with read/write support based on Spark SQL, in which case Spark SQL is the preferred approach.
 
-Writable Support
+### Writable Support
 
 PySpark SequenceFile support loads an RDD of key-value pairs within Java, converts Writables to base Java types, and pickles the resulting Java objects using Pyrolite. When saving an RDD of key-value pairs to SequenceFile, PySpark does the reverse. It unpickles Python objects into Java objects and then converts them to Writables. The following Writables are automatically converted:
 
-Writable Type	Python Type
-Text	unicode str
-IntWritable	int
-FloatWritable	float
-DoubleWritable	float
-BooleanWritable	bool
-BytesWritable	bytearray
-NullWritable	None
-MapWritable	dict
+
+|Writable Type | Python Type |
+|-|-|
+|Text|unicode str|
+|IntWritable|int|
+|FloatWritable|float|
+|DoubleWritable|float|
+|BooleanWritable|bool|
+|BytesWritable|byte array|
+|NullWritable|None|
+|MapWritable|dict|
+
 Arrays are not handled out-of-the-box. Users need to specify custom ArrayWritable subtypes when reading or writing. When writing, users also need to specify custom converters that convert arrays to custom ArrayWritable subtypes. When reading, the default converter will convert custom ArrayWritable subtypes to Java Object[], which then get pickled to Python tuples. To get Python array.array for arrays of primitive types, users need to specify custom converters.
 
-Saving and Loading SequenceFiles
+### Saving and Loading SequenceFiles
 
 Similarly to text files, SequenceFiles can be saved and loaded by specifying the path. The key and value classes can be specified, but for standard Writables this is not required.
 
+```python
 >>> rdd = sc.parallelize(range(1, 4)).map(lambda x: (x, "a" * x))
 >>> rdd.saveAsSequenceFile("path/to/file")
 >>> sorted(sc.sequenceFile("path/to/file").collect())
 [(1, u'a'), (2, u'aa'), (3, u'aaa')]
-Saving and Loading Other Hadoop Input/Output Formats
+```
+
+### Saving and Loading Other Hadoop Input/Output Formats
 
 PySpark can also read any Hadoop InputFormat or write any Hadoop OutputFormat, for both ‘new’ and ‘old’ Hadoop MapReduce APIs. If required, a Hadoop configuration can be passed in as a Python dict. Here is an example using the Elasticsearch ESInputFormat:
 
+```shell
 $ ./bin/pyspark --jars /path/to/elasticsearch-hadoop.jar
 >>> conf = {"es.resource" : "index/type"}  # assume Elasticsearch is running on localhost defaults
 >>> rdd = sc.newAPIHadoopRDD("org.elasticsearch.hadoop.mr.EsInputFormat",
@@ -244,13 +282,16 @@ $ ./bin/pyspark --jars /path/to/elasticsearch-hadoop.jar
  {u'field1': True,
   u'field2': u'Some Text',
   u'field3': 12345})
+```
+
 Note that, if the InputFormat simply depends on a Hadoop configuration and/or input path, and the key and value classes can easily be converted according to the above table, then this approach should work well for such cases.
 
 If you have custom serialized binary data (such as loading data from Cassandra / HBase), then you will first need to transform that data on the Scala/Java side to something which can be handled by Pyrolite’s pickler. A Converter trait is provided for this. Simply extend this trait and implement your transformation code in the convert method. Remember to ensure that this class, along with any dependencies required to access your InputFormat, are packaged into your Spark job jar and included on the PySpark classpath.
 
 See the Python examples and the Converter examples for examples of using Cassandra / HBase InputFormat and OutputFormat with custom converters.
 
-RDD Operations
+## RDD Operations
+
 RDDs support two types of operations: transformations, which create a new dataset from an existing one, and actions, which return a value to the driver program after running a computation on the dataset. For example, map is a transformation that passes each dataset element through a function and returns a new RDD representing the results. On the other hand, reduce is an action that aggregates all the elements of the RDD using some function and returns the final result to the driver program (although there is also a parallel reduceByKey that returns a distributed dataset).
 
 All transformations in Spark are lazy, in that they do not compute their results right away. Instead, they just remember the transformations applied to some base dataset (e.g. a file). The transformations are only computed when an action requires a result to be returned to the driver program. This design enables Spark to run more efficiently. For example, we can realize that a dataset created through map will be used in a reduce and return only the result of the reduce to the driver, rather than the larger mapped dataset.
@@ -319,9 +360,7 @@ One of the harder things about Spark is understanding the scope and life cycle o
 Example
 Consider the naive RDD element sum below, which may behave differently depending on whether execution is happening within the same JVM. A common example of this is when running Spark in local mode (--master = local[n]) versus deploying a Spark application to a cluster (e.g. via spark-submit to YARN):
 
-Scala
-Java
-Python
+```python
 counter = 0
 rdd = sc.parallelize(data)
 
@@ -332,6 +371,8 @@ def increment_counter(x):
 rdd.foreach(increment_counter)
 
 print("Counter value: ", counter)
+```
+
 Local vs. cluster modes
 The behavior of the above code is undefined, and may not work as intended. To execute jobs, Spark breaks up the processing of RDD operations into tasks, each of which is executed by an executor. Prior to execution, Spark computes the task’s closure. The closure is those variables and methods which must be visible for the executor to perform its computations on the RDD (in this case foreach()). This closure is serialized and sent to each executor.
 
@@ -533,15 +574,15 @@ For accumulator updates performed inside actions only, Spark guarantees that eac
 
 Accumulators do not change the lazy evaluation model of Spark. If they are being updated within an operation on an RDD, their value is only updated once that RDD is computed as part of an action. Consequently, accumulator updates are not guaranteed to be executed when made within a lazy transformation like map(). The below code fragment demonstrates this property:
 
-Scala
-Java
-Python
+```python
 accum = sc.accumulator(0)
 def g(x):
     accum.add(x)
     return f(x)
 data.map(g)
 # Here, accum is still 0 because no actions have caused the `map` to be computed.
+```
+
 Deploying to a Cluster
 The application submission guide describes how to submit applications to a cluster. In short, once you package your application into a JAR (for Java/Scala) or a set of .py or .zip files (for Python), the bin/spark-submit script lets you submit it to any supported cluster manager.
 
