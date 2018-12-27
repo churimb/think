@@ -208,7 +208,7 @@ If using a path on the local filesystem, the file must also be accessible at the
 Spark所有基于文件的输入方法，包括文本文件，支持目录，压缩文件，以及通配符。
 例如，您可以使用textFile("/my/directory")、textFile("/my/directory/*.txt")和textFile("/my/directory/*.gz")。
 
-All of Spark’s file-based input methods, including textFile, support running on directories, compressed files, and wildcards as well. For example, you can use textFile("/my/directory"), textFile("/my/directory/*.txt"), and textFile("/my/directory/*.gz").
+All of Spark’s file-based input methods, including textFile, support running on directories, compressed files, and wildcards as well. For example, you can use `textFile("/my/directory")`, `textFile("/my/directory/*.txt")`, and `textFile("/my/directory/*.gz")`.
 
 textFile方法同样还有可选的第二个参数来控制文件的分区数量。
 默认情况下，Spark为文件的每个块创建一个分区（块在HDFS中默认为128MB），但是您也可以通过传递更大的值来请求更多的分区。
@@ -290,41 +290,79 @@ If you have custom serialized binary data (such as loading data from Cassandra /
 
 See the Python examples and the Converter examples for examples of using Cassandra / HBase InputFormat and OutputFormat with custom converters.
 
-## RDD Operations
+## RDD 操作
+
+RDDs支持两种类型的操作：
+转换（transformations），从现有数据集创建新数据集的方法；
+动作（actions），在数据集中运行计算之后，返回一个值给驱动程序。
+例如，map是一个转换，它通过将一个函数传递每个数据集元素使用，并返回一个表示结果的新的RDD。
+另一方面，reduce是一个动作，它使用某个函数聚合RDD的所有元素，并将最终结果返回给驱动程序（尽管还有一个返回分布式数据集的并行reduceByKey）。
 
 RDDs support two types of operations: transformations, which create a new dataset from an existing one, and actions, which return a value to the driver program after running a computation on the dataset. For example, map is a transformation that passes each dataset element through a function and returns a new RDD representing the results. On the other hand, reduce is an action that aggregates all the elements of the RDD using some function and returns the final result to the driver program (although there is also a parallel reduceByKey that returns a distributed dataset).
 
+Spark中的所有转换都是惰性的，因为它们不会立即计算结果。
+相反，他们只记得应用于某些基本数据集（例如一个文件）的转换。
+只有当一个操作需要将结果返回到驱动程序时，才会计算转换。
+这种设计使Spark运行更加高效。
+例如，我们可以知道通过map创建的数据集，将在reduce中使用，只将reduce的结果返回给驱动程序，而不是更大的映射（mapped）数据集。
+
 All transformations in Spark are lazy, in that they do not compute their results right away. Instead, they just remember the transformations applied to some base dataset (e.g. a file). The transformations are only computed when an action requires a result to be returned to the driver program. This design enables Spark to run more efficiently. For example, we can realize that a dataset created through map will be used in a reduce and return only the result of the reduce to the driver, rather than the larger mapped dataset.
+
+默认情况下，每次在每个已转换的RDD上运行操作时，都会重新计算它。
+但是，您也可以使用持久化（或缓存）方法将RDD持久化到内存中，在这种情况下，Spark将在集群中保留元素，以便在下一次查询时更快地访问它。
+还支持在磁盘上持久化rdd，或跨多个节点复制rdd。
 
 By default, each transformed RDD may be recomputed each time you run an action on it. However, you may also persist an RDD in memory using the persist (or cache) method, in which case Spark will keep the elements around on the cluster for much faster access the next time you query it. There is also support for persisting RDDs on disk, or replicated across multiple nodes.
 
-Basics
-Scala
-Java
-Python
+为了说明RDD的基本功能，请考虑下面的简单程序:
+
 To illustrate RDD basics, consider the simple program below:
 
+```python
 lines = sc.textFile("data.txt")
 lineLengths = lines.map(lambda s: len(s))
 totalLength = lineLengths.reduce(lambda a, b: a + b)
+```
+
+第一行从外部文件定义了一个基本的RDD。
+此数据集没有加载到内存中或其它地方：lines只是指向文件的指针。
+第二行将lineLengths定义为映射转换的结果。
+同样，由于惰性运算，linelength不会立即计算。
+最后，我们运行reduce，这是一个操作。
+此时，Spark将计算分解为在不同机器上运行的任务，每台机器都运行它的那部分map和一个局部计算，只返回它给驱动程序的结果。
+
 The first line defines a base RDD from an external file. This dataset is not loaded in memory or otherwise acted on: lines is merely a pointer to the file. The second line defines lineLengths as the result of a map transformation. Again, lineLengths is not immediately computed, due to laziness. Finally, we run reduce, which is an action. At this point Spark breaks the computation into tasks to run on separate machines, and each machine runs both its part of the map and a local reduction, returning only its answer to the driver program.
+
+如果以后我们还想再使用lineLengths，我们可以添加：
 
 If we also wanted to use lineLengths again later, we could add:
 
+```
 lineLengths.persist()
+```
+
+在reduce之前，这将会在第一次计算后将lineLengths保存在内存中。
+
 before the reduce, which would cause lineLengths to be saved in memory after the first time it is computed.
 
-Passing Functions to Spark
-Scala
-Java
-Python
+## 传递函数给Spark
+
+Spark的API在很大程度上依赖于在驱动程序中传递函数以在集群上运行。
+有三种推荐的方法：
+
 Spark’s API relies heavily on passing functions in the driver program to run on the cluster. There are three recommended ways to do this:
+
+Lambda表达式，可以用于写成表达式的简单函数。（Lambdas不支持多语句函数或不返回值的语句。）
+函数内部本地defs，以获得更长的代码能力。
+模块中的顶级函数。
+例如，要传递一个长度超过lambda所支持的函数，请考虑以下代码:
 
 Lambda expressions, for simple functions that can be written as an expression. (Lambdas do not support multi-statement functions or statements that do not return a value.)
 Local defs inside the function calling into Spark, for longer code.
 Top-level functions in a module.
 For example, to pass a longer function than can be supported using a lambda, consider the code below:
 
+```python
 """MyScript.py"""
 if __name__ == "__main__":
     def myFunc(s):
@@ -333,31 +371,60 @@ if __name__ == "__main__":
 
     sc = SparkContext(...)
     sc.textFile("file.txt").map(myFunc)
+```
+
+注意，虽然也可以在类实例中传递方法的引用（与单例对象相反），这需要发送包含该类的对象和方法。
+例如，考虑：
+
 Note that while it is also possible to pass a reference to a method in a class instance (as opposed to a singleton object), this requires sending the object that contains that class along with the method. For example, consider:
 
+```python
 class MyClass(object):
     def func(self, s):
         return s
     def doStuff(self, rdd):
         return rdd.map(self.func)
+```
+
+在这里，如果我们创建一个新的MyClass并调用doStuff，其中的map引用那个MyClass实例的func方法，所以需要将整个对象发送到集群。
+
 Here, if we create a new MyClass and call doStuff on it, the map inside there references the func method of that MyClass instance, so the whole object needs to be sent to the cluster.
+
+同理，访问外部对象的字段会引用整个对象：
 
 In a similar way, accessing fields of the outer object will reference the whole object:
 
+```python
 class MyClass(object):
     def __init__(self):
         self.field = "Hello"
     def doStuff(self, rdd):
         return rdd.map(lambda s: self.field + s)
+```
+
+为了避免这个问题，最简单的方法是将字段复制到本地变量中，而不是从外部访问它：
+
 To avoid this issue, the simplest way is to copy field into a local variable instead of accessing it externally:
 
+```python
 def doStuff(self, rdd):
     field = self.field
     return rdd.map(lambda s: field + s)
-Understanding closures 
+```
+
+## 理解闭包
+
+Spark的难点之一是理解跨集群执行代码时变量和方法的作用域和生命周期。
+在变量作用域之外修改变量的RDD操作经常引起混乱。
+在下面的示例中，我们将使用foreach()来增加counter的代码，但其他操作也可能出现类似的问题。
+
 One of the harder things about Spark is understanding the scope and life cycle of variables and methods when executing code across a cluster. RDD operations that modify variables outside of their scope can be a frequent source of confusion. In the example below we’ll look at code that uses foreach() to increment a counter, but similar issues can occur for other operations as well.
 
-Example
+### Example
+
+考虑下面简单的RDD元素sum，根据是否在同一个JVM中执行，其行为可能有所不同。
+一个常见的用法是在本地模式下运行Spark（--master = local[n]），而不是将Spark应用程序部署到集群（例如，通过spark-submit到YARN）：
+
 Consider the naive RDD element sum below, which may behave differently depending on whether execution is happening within the same JVM. A common example of this is when running Spark in local mode (--master = local[n]) versus deploying a Spark application to a cluster (e.g. via spark-submit to YARN):
 
 ```python
@@ -373,88 +440,132 @@ rdd.foreach(increment_counter)
 print("Counter value: ", counter)
 ```
 
-Local vs. cluster modes
+## 本地 VS 集群
+
+上述代码的行为是未定义的，将会无法正常工作。
+为了执行作业，Spark将RDD操作的处理分解为任务，每个任务由执行者（executor）执行。
+在执行之前，Spark计算任务的闭包。
+闭包是那些必须对执行程序可见的变量和方法，以便在RDD上执行其计算（在本例中是foreach()）。
+这个闭包被序列化并发送到每个执行者。
+
 The behavior of the above code is undefined, and may not work as intended. To execute jobs, Spark breaks up the processing of RDD operations into tasks, each of which is executed by an executor. Prior to execution, Spark computes the task’s closure. The closure is those variables and methods which must be visible for the executor to perform its computations on the RDD (in this case foreach()). This closure is serialized and sent to each executor.
+
+发送到每个执行者的闭包中的变量现在是副本形式，因此，当在foreach函数中引用counter时，它不再是驱动节点上的counter。
 
 The variables within the closure sent to each executor are now copies and thus, when counter is referenced within the foreach function, it’s no longer the counter on the driver node. There is still a counter in the memory of the driver node but this is no longer visible to the executors! The executors only see the copy from the serialized closure. Thus, the final value of counter will still be zero since all operations on counter were referencing the value within the serialized closure.
 
+在本地模式下，某些情况，foreach函数实际将在与驱动程序相同的JVM中执行，并引用相同的原始counter，并可能实际更新它。
+
 In local mode, in some circumstances, the foreach function will actually execute within the same JVM as the driver and will reference the same original counter, and may actually update it.
+
+要确保在这类场景中定义良好的行为，应该使用累加器（Accumulator）。
+Spark中的累加器专门用于在集群中的工作节点之间分割执行时安全地更新变量。
+本指南的累加器部分会更详细地讨论了它。
 
 To ensure well-defined behavior in these sorts of scenarios one should use an Accumulator. Accumulators in Spark are used specifically to provide a mechanism for safely updating a variable when execution is split up across worker nodes in a cluster. The Accumulators section of this guide discusses these in more detail.
 
+一般来说，闭包（结构如循环或局部定义的方法），不应该用于改变某些全局状态。Spark不定义或保证对闭包外部引用的对象的修改行为。
+一些执行此操作的代码可能在本地模式下能工作，但这是偶然的，而且这些代码在分布式模式下的行为不会像预期的那样。
+如果需要一些全局聚合，则使用累加器。
+
 In general, closures - constructs like loops or locally defined methods, should not be used to mutate some global state. Spark does not define or guarantee the behavior of mutations to objects referenced from outside of closures. Some code that does this may work in local mode, but that’s just by accident and such code will not behave as expected in distributed mode. Use an Accumulator instead if some global aggregation is needed.
 
-Printing elements of an RDD
+## 打印一个RDD
+
+另一个常见的习惯用法是尝试使用RDD.foreach(println)或RDD.map(println)打印RDD的元素。
+在一台机器上，这将生成预期的输出并打印所有RDD元素。
+但是，在集群模式下，执行者调用的stdout是现在正在写入执行者的stdout，而不是驱动程序上的stdout，所以驱动程序上的stdout不会显示这些的！
+要打印驱动程序上的所有元素，可以使用collect()方法首先将RDD带到驱动节点，例如：RDD.collect().foreach(println)。
+但是，这可能会导致驱动程序耗尽内存，因为collect()会将所有RDD提取到一台机器上；
+如果只需要打印RDD的几个元素，更安全的方法是使用rdd.take(100).foreach(println)。
+
 Another common idiom is attempting to print out the elements of an RDD using rdd.foreach(println) or rdd.map(println). On a single machine, this will generate the expected output and print all the RDD’s elements. However, in cluster mode, the output to stdout being called by the executors is now writing to the executor’s stdout instead, not the one on the driver, so stdout on the driver won’t show these! To print all elements on the driver, one can use the collect() method to first bring the RDD to the driver node thus: rdd.collect().foreach(println). This can cause the driver to run out of memory, though, because collect() fetches the entire RDD to a single machine; if you only need to print a few elements of the RDD, a safer approach is to use the take(): rdd.take(100).foreach(println).
 
-Working with Key-Value Pairs
-Scala
-Java
-Python
+## 使用键-值对
+
+虽然大多数Spark操作都是在包含任何类型对象的RDDs上进行的，但是有一些特殊操作只在键-值对的RDDs上可用。
+最常见的是分布式的“shuffle”操作，例如通过键对元素进行分组或聚合。
+
 While most Spark operations work on RDDs containing any type of objects, a few special operations are only available on RDDs of key-value pairs. The most common ones are distributed “shuffle” operations, such as grouping or aggregating the elements by a key.
+
+在Python中，这些操作在包含内置Python元组(1,2)的rdd上工作。
+只需创建这样的元组，然后调用所需的操作。
 
 In Python, these operations work on RDDs containing built-in Python tuples such as (1, 2). Simply create such tuples and then call your desired operation.
 
+例如，下面的代码使用键-值对上的reduceByKey操作来计算每行文本在文件中出现的次数:
+
 For example, the following code uses the reduceByKey operation on key-value pairs to count how many times each line of text occurs in a file:
 
+```python
 lines = sc.textFile("data.txt")
 pairs = lines.map(lambda s: (s, 1))
 counts = pairs.reduceByKey(lambda a, b: a + b)
+```
+
+例如，我们还可以使用counts.sortByKey()按字母顺序进行排序，最后使用count.collect()将它们作为对象列表带回驱动程序。
+
 We could also use counts.sortByKey(), for example, to sort the pairs alphabetically, and finally counts.collect() to bring them back to the driver program as a list of objects.
 
-Transformations
+## Transformations
+
+下表列出了Spark支持的一些常见转换。有关详细信息，请参阅RDD API和RDD函数部分。
+
 The following table lists some of the common transformations supported by Spark. Refer to the RDD API doc (Scala, Java, Python, R) and pair RDD functions doc (Scala, Java) for details.
 
-Transformation	Meaning
-map(func)	Return a new distributed dataset formed by passing each element of the source through a function func.
-filter(func)	Return a new dataset formed by selecting those elements of the source on which func returns true.
-flatMap(func)	Similar to map, but each input item can be mapped to 0 or more output items (so func should return a Seq rather than a single item).
-mapPartitions(func)	Similar to map, but runs separately on each partition (block) of the RDD, so func must be of type Iterator<T> => Iterator<U> when running on an RDD of type T.
-mapPartitionsWithIndex(func)	Similar to mapPartitions, but also provides func with an integer value representing the index of the partition, so func must be of type (Int, Iterator<T>) => Iterator<U> when running on an RDD of type T.
-sample(withReplacement, fraction, seed)	Sample a fraction fraction of the data, with or without replacement, using a given random number generator seed.
-union(otherDataset)	Return a new dataset that contains the union of the elements in the source dataset and the argument.
-intersection(otherDataset)	Return a new RDD that contains the intersection of elements in the source dataset and the argument.
-distinct([numPartitions]))	Return a new dataset that contains the distinct elements of the source dataset.
-groupByKey([numPartitions])	When called on a dataset of (K, V) pairs, returns a dataset of (K, Iterable<V>) pairs. 
-Note: If you are grouping in order to perform an aggregation (such as a sum or average) over each key, using reduceByKey or aggregateByKey will yield much better performance. 
-Note: By default, the level of parallelism in the output depends on the number of partitions of the parent RDD. You can pass an optional numPartitions argument to set a different number of tasks.
-reduceByKey(func, [numPartitions])	When called on a dataset of (K, V) pairs, returns a dataset of (K, V) pairs where the values for each key are aggregated using the given reduce function func, which must be of type (V,V) => V. Like in groupByKey, the number of reduce tasks is configurable through an optional second argument.
-aggregateByKey(zeroValue)(seqOp, combOp, [numPartitions])	When called on a dataset of (K, V) pairs, returns a dataset of (K, U) pairs where the values for each key are aggregated using the given combine functions and a neutral "zero" value. Allows an aggregated value type that is different than the input value type, while avoiding unnecessary allocations. Like in groupByKey, the number of reduce tasks is configurable through an optional second argument.
-sortByKey([ascending], [numPartitions])	When called on a dataset of (K, V) pairs where K implements Ordered, returns a dataset of (K, V) pairs sorted by keys in ascending or descending order, as specified in the boolean ascending argument.
-join(otherDataset, [numPartitions])	When called on datasets of type (K, V) and (K, W), returns a dataset of (K, (V, W)) pairs with all pairs of elements for each key. Outer joins are supported through leftOuterJoin, rightOuterJoin, and fullOuterJoin.
-cogroup(otherDataset, [numPartitions])	When called on datasets of type (K, V) and (K, W), returns a dataset of (K, (Iterable<V>, Iterable<W>)) tuples. This operation is also called groupWith.
-cartesian(otherDataset)	When called on datasets of types T and U, returns a dataset of (T, U) pairs (all pairs of elements).
-pipe(command, [envVars])	Pipe each partition of the RDD through a shell command, e.g. a Perl or bash script. RDD elements are written to the process's stdin and lines output to its stdout are returned as an RDD of strings.
-coalesce(numPartitions)	Decrease the number of partitions in the RDD to numPartitions. Useful for running operations more efficiently after filtering down a large dataset.
-repartition(numPartitions)	Reshuffle the data in the RDD randomly to create either more or fewer partitions and balance it across them. This always shuffles all data over the network.
-repartitionAndSortWithinPartitions(partitioner)	Repartition the RDD according to the given partitioner and, within each resulting partition, sort records by their keys. This is more efficient than calling repartition and then sorting within each partition because it can push the sorting down into the shuffle machinery.
-Actions
-The following table lists some of the common actions supported by Spark. Refer to the RDD API doc (Scala, Java, Python, R)
+|Transformation|Meaning|
+|-|-|
+|map(func)|通过传递函数func到每个元素，返回一个新的分布式数据集。
+filter(func)|通过选择func的返回为true的源元素，返回一个新的数据集。
+flatMap(func)|与map类似，但是每个输入项都可以映射到0或多个输出项（因此func应该返回Seq，而不是单个项）。
+mapPartitions(func)|类似map，但是在RDD的每个分区（块）上单独运行，所以当在类型为T的RDD上运行时，func必须是`Iterator<T> => Iterator<U>`。
+mapPartitionsWithIndex(func)|类似于mapPartitions，但也为func提供了一个表示分区索引的整数值，所以在类型为T的RDD上运行时，func必须是`(Int, Iterator<T>) => Iterator<U>`。
+sample(withReplacement, fraction, seed)|Sample a fraction fraction of the data, with or without replacement, using a given random number generator seed.
+union(otherDataset)|	Return a new dataset that contains the union of the elements in the source dataset and the argument.
+intersection(otherDataset)|	Return a new RDD that contains the intersection of elements in the source dataset and the argument.
+distinct([numPartitions]))|	Return a new dataset that contains the distinct elements of the source dataset.
+groupByKey([numPartitions])|当调用是对(K, V)对的数据集时，返回(K, Iterable)对的数据集。注意:如果您分组是为了对每个键执行聚合（如总和或平均值），那么使用reduceByKey或aggregateByKey将获得更好的性能。注意:默认情况下，输出中的并行程度取决于父RDD的分区数量。您可以传递一个可选的numPartitions参数来设置不同数量的任务。
+reduceByKey(func, [numPartitions])|当调用是对(K、V)的数据集，返回一个数据集(K、V)，每个值都是使用给定的reduce函数func聚合的，必须`(V,V) => V`型。像groupByKey，reduce任务的数量通过一个可选的第二个参数配置。
+aggregateByKey(zeroValue)(seqOp, combOp, [numPartitions])|	When called on a dataset of (K, V) pairs, returns a dataset of (K, U) pairs where the values for each key are aggregated using the given combine functions and a neutral "zero" value. Allows an aggregated value type that is different than the input value type, while avoiding unnecessary allocations. Like in groupByKey, the number of reduce tasks is configurable through an optional second argument.
+sortByKey([ascending], [numPartitions])|	When called on a dataset of (K, V) pairs where K implements Ordered, returns a dataset of (K, V) pairs sorted by keys in ascending or descending order, as specified in the boolean ascending argument.
+join(otherDataset, [numPartitions])|	When called on datasets of type (K, V) and (K, W), returns a dataset of (K, (V, W)) pairs with all pairs of elements for each key. Outer joins are supported through leftOuterJoin, rightOuterJoin, and fullOuterJoin.
+cogroup(otherDataset, [numPartitions])|	When called on datasets of type (K, V) and (K, W), returns a dataset of (K, (Iterable<V>, Iterable<W>)) tuples. This operation is also called groupWith.
+cartesian(otherDataset)|	When called on datasets of types T and U, returns a dataset of (T, U) pairs (all pairs of elements).
+pipe(command, [envVars])|	Pipe each partition of the RDD through a shell command, e.g. a Perl or bash script. RDD elements are written to the process's stdin and lines output to its stdout are returned as an RDD of strings.
+coalesce(numPartitions)|	Decrease the number of partitions in the RDD to numPartitions. Useful for running operations more efficiently after filtering down a large dataset.
+repartition(numPartitions)|	Reshuffle the data in the RDD randomly to create either more or fewer partitions and balance it across them. This always shuffles all data over the network.
+repartitionAndSortWithinPartitions(partitioner)|	Repartition the RDD according to the given partitioner and, within each resulting partition, sort records by their keys. This is more efficient than calling repartition and then sorting within each partition because it can push the sorting down into the shuffle machinery.
 
-and pair RDD functions doc (Scala, Java) for details.
 
-Action	Meaning
-reduce(func)	Aggregate the elements of the dataset using a function func (which takes two arguments and returns one). The function should be commutative and associative so that it can be computed correctly in parallel.
-collect()	Return all the elements of the dataset as an array at the driver program. This is usually useful after a filter or other operation that returns a sufficiently small subset of the data.
-count()	Return the number of elements in the dataset.
-first()	Return the first element of the dataset (similar to take(1)).
-take(n)	Return an array with the first n elements of the dataset.
-takeSample(withReplacement, num, [seed])	Return an array with a random sample of num elements of the dataset, with or without replacement, optionally pre-specifying a random number generator seed.
-takeOrdered(n, [ordering])	Return the first n elements of the RDD using either their natural order or a custom comparator.
-saveAsTextFile(path)	Write the elements of the dataset as a text file (or set of text files) in a given directory in the local filesystem, HDFS or any other Hadoop-supported file system. Spark will call toString on each element to convert it to a line of text in the file.
-saveAsSequenceFile(path) 
-(Java and Scala)	Write the elements of the dataset as a Hadoop SequenceFile in a given path in the local filesystem, HDFS or any other Hadoop-supported file system. This is available on RDDs of key-value pairs that implement Hadoop's Writable interface. In Scala, it is also available on types that are implicitly convertible to Writable (Spark includes conversions for basic types like Int, Double, String, etc).
-saveAsObjectFile(path) 
-(Java and Scala)	Write the elements of the dataset in a simple format using Java serialization, which can then be loaded using SparkContext.objectFile().
-countByKey()	Only available on RDDs of type (K, V). Returns a hashmap of (K, Int) pairs with the count of each key.
-foreach(func)	Run a function func on each element of the dataset. This is usually done for side effects such as updating an Accumulator or interacting with external storage systems. 
-Note: modifying variables other than Accumulators outside of the foreach() may result in undefined behavior. See Understanding closures for more details.
+## Actions
+
+下表列出了Spark支持的一些常见操作。有关详细信息，请参阅RDD API和RDD函数部分。
+
+The following table lists some of the common actions supported by Spark. Refer to the RDD API doc (Scala, Java, Python, R)and pair RDD functions doc (Scala, Java) for details.
+
+|Action|Meaning|
+|-|-|
+reduce(func)|使用函数func聚合数据集的元素（接受两个参数并返回一个）。这个函数应该是可交换的和相联的，这样才能正确地并行计算。
+collect()|在驱动程序中以数组的形式返回数据集的所有元素。这通常在过滤器或其他操作返回足够小的数据子集之后非常有用。
+count()|返回数据集中元素的数量。
+first()|返回数据集的第一个元素（类似于take(1)）。
+take(n)|返回包含数据集的前n个元素的数组。
+takeSample(withReplacement, num, [seed])|返回一个数组，该数组带有数据集的num个元素的随机样本，可以替换也可以不替换，可以预先指定随机数生成器种子。
+takeOrdered(n, [ordering])|	Return the first n elements of the RDD using either their natural order or a custom comparator.
+saveAsTextFile(path)|将数据集的元素写入文本文件（或一组文本文件）给定的本地目录、HDFS或者其他hadoop支持的文件系统。Spark将对每个元素调用toString，将其转换为文件中的一行文本。
+saveAsSequenceFile(path)| （Java and Scala）在本地文件系统、HDFS或任何Hadoop支持的文件系统中的给定路径中，将数据集的元素写成Hadoop SequenceFile。这在实现Hadoop可写接口的键-值对的RDDs上是可用的。在Scala中，它也可以用于隐式转换为可写的类型（Spark包括对Int、Double、String等基本类型的转换）。
+saveAsObjectFile(path)| (Java and Scala)	Write the elements of the dataset in a simple format using Java serialization, which can then be loaded using SparkContext.objectFile().
+countByKey()|仅在类型为(K, V)的RDDs上可用。返回一个hashmap (K, Int)对和每个键的计数。
+foreach(func)|在数据集的每个元素上运行func函数。这通常是针对其它作用，如更新累加器或与外部存储系统交互。注意:修改在foreach()之外的累加器以外的变量可能会导致未定义的行为。有关更多细节，请参见理解闭包。
+
+park RDD API还公开了一些操作的异步版本，比如foreachAsync和foreach，它将立即向调用方返回一个futuresponse，而不是在操作完成前阻塞。这可以用于管理或等待操作的异步执行。
+
 The Spark RDD API also exposes asynchronous versions of some actions, like foreachAsync for foreach, which immediately return a FutureAction to the caller instead of blocking on completion of the action. This can be used to manage or wait for the asynchronous execution of the action.
 
-Shuffle operations
+## Shuffle（洗牌） operations
 Certain operations within Spark trigger an event known as the shuffle. The shuffle is Spark’s mechanism for re-distributing data so that it’s grouped differently across partitions. This typically involves copying data across executors and machines, making the shuffle a complex and costly operation.
 
-Background
+### Background
 To understand what happens during the shuffle we can consider the example of the reduceByKey operation. The reduceByKey operation generates a new RDD where all values for a single key are combined into a tuple - the key and the result of executing a reduce function against all values associated with that key. The challenge is that not all values for a single key necessarily reside on the same partition, or even the same machine, but they must be co-located to compute the result.
 
 In Spark, data is generally not distributed across partitions to be in the necessary place for a specific operation. During computations, a single task will operate on a single partition - thus, to organize all the data for a single reduceByKey reduce task to execute, Spark needs to perform an all-to-all operation. It must read from all partitions to find all the values for all keys, and then bring together values across partitions to compute the final result for each key - this is called the shuffle.
@@ -466,7 +577,7 @@ repartitionAndSortWithinPartitions to efficiently sort partitions while simultan
 sortBy to make a globally ordered RDD
 Operations which can cause a shuffle include repartition operations like repartition and coalesce, ‘ByKey operations (except for counting) like groupByKey and reduceByKey, and join operations like cogroup and join.
 
-Performance Impact
+### Performance Impact（性能影响）
 The Shuffle is an expensive operation since it involves disk I/O, data serialization, and network I/O. To organize data for the shuffle, Spark generates sets of tasks - map tasks to organize the data, and a set of reduce tasks to aggregate it. This nomenclature comes from MapReduce and does not directly relate to Spark’s map and reduce operations.
 
 Internally, results from individual map tasks are kept in memory until they can’t fit. Then, these are sorted based on the target partition and written to a single file. On the reduce side, tasks read the relevant sorted blocks.
@@ -477,28 +588,27 @@ Shuffle also generates a large number of intermediate files on disk. As of Spark
 
 Shuffle behavior can be tuned by adjusting a variety of configuration parameters. See the ‘Shuffle Behavior’ section within the Spark Configuration Guide.
 
-RDD Persistence
+## RDD Persistence（持久化）
 One of the most important capabilities in Spark is persisting (or caching) a dataset in memory across operations. When you persist an RDD, each node stores any partitions of it that it computes in memory and reuses them in other actions on that dataset (or datasets derived from it). This allows future actions to be much faster (often by more than 10x). Caching is a key tool for iterative algorithms and fast interactive use.
 
 You can mark an RDD to be persisted using the persist() or cache() methods on it. The first time it is computed in an action, it will be kept in memory on the nodes. Spark’s cache is fault-tolerant – if any partition of an RDD is lost, it will automatically be recomputed using the transformations that originally created it.
 
 In addition, each persisted RDD can be stored using a different storage level, allowing you, for example, to persist the dataset on disk, persist it in memory but as serialized Java objects (to save space), replicate it across nodes. These levels are set by passing a StorageLevel object (Scala, Java, Python) to persist(). The cache() method is a shorthand for using the default storage level, which is StorageLevel.MEMORY_ONLY (store deserialized objects in memory). The full set of storage levels is:
 
-Storage Level	Meaning
-MEMORY_ONLY	Store RDD as deserialized Java objects in the JVM. If the RDD does not fit in memory, some partitions will not be cached and will be recomputed on the fly each time they're needed. This is the default level.
-MEMORY_AND_DISK	Store RDD as deserialized Java objects in the JVM. If the RDD does not fit in memory, store the partitions that don't fit on disk, and read them from there when they're needed.
-MEMORY_ONLY_SER 
-(Java and Scala)	Store RDD as serialized Java objects (one byte array per partition). This is generally more space-efficient than deserialized objects, especially when using a fast serializer, but more CPU-intensive to read.
-MEMORY_AND_DISK_SER 
-(Java and Scala)	Similar to MEMORY_ONLY_SER, but spill partitions that don't fit in memory to disk instead of recomputing them on the fly each time they're needed.
-DISK_ONLY	Store the RDD partitions only on disk.
-MEMORY_ONLY_2, MEMORY_AND_DISK_2, etc.	Same as the levels above, but replicate each partition on two cluster nodes.
-OFF_HEAP (experimental)	Similar to MEMORY_ONLY_SER, but store the data in off-heap memory. This requires off-heap memory to be enabled.
+Storage Level|	Meaning
+-|-
+MEMORY_ONLY|	Store RDD as deserialized Java objects in the JVM. If the RDD does not fit in memory, some partitions will not be cached and will be recomputed on the fly each time they're needed. This is the default level.
+MEMORY_AND_DISK|	Store RDD as deserialized Java objects in the JVM. If the RDD does not fit in memory, store the partitions that don't fit on disk, and read them from there when they're needed.
+MEMORY_ONLY_SER|    (Java and Scala)	Store RDD as serialized Java objects (one byte array per partition). This is generally more space-efficient than deserialized objects, especially when using a fast serializer, but more CPU-intensive to read.
+MEMORY_AND_DISK_SER|    (Java and Scala)	Similar to MEMORY_ONLY_SER, but spill partitions that don't fit in memory to disk instead of recomputing them on the fly each time they're needed.
+DISK_ONLY|	Store the RDD partitions only on disk.
+MEMORY_ONLY_2, MEMORY_AND_DISK_2, etc.|	Same as the levels above, but replicate each partition on two cluster nodes.
+OFF_HEAP (experimental)|	Similar to MEMORY_ONLY_SER, but store the data in off-heap memory. This requires off-heap memory to be enabled.
 Note: In Python, stored objects will always be serialized with the Pickle library, so it does not matter whether you choose a serialized level. The available storage levels in Python include MEMORY_ONLY, MEMORY_ONLY_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, DISK_ONLY, and DISK_ONLY_2.
 
 Spark also automatically persists some intermediate data in shuffle operations (e.g. reduceByKey), even without users calling persist. This is done to avoid recomputing the entire input if a node fails during the shuffle. We still recommend users call persist on the resulting RDD if they plan to reuse it.
 
-Which Storage Level to Choose?
+## Which Storage Level to Choose?
 Spark’s storage levels are meant to provide different trade-offs between memory usage and CPU efficiency. We recommend going through the following process to select one:
 
 If your RDDs fit comfortably with the default storage level (MEMORY_ONLY), leave them that way. This is the most CPU-efficient option, allowing operations on the RDDs to run as fast as possible.
@@ -509,45 +619,43 @@ Don’t spill to disk unless the functions that computed your datasets are expen
 
 Use the replicated storage levels if you want fast fault recovery (e.g. if using Spark to serve requests from a web application). All the storage levels provide full fault tolerance by recomputing lost data, but the replicated ones let you continue running tasks on the RDD without waiting to recompute a lost partition.
 
-Removing Data
+## Removing Data
 Spark automatically monitors cache usage on each node and drops out old data partitions in a least-recently-used (LRU) fashion. If you would like to manually remove an RDD instead of waiting for it to fall out of the cache, use the RDD.unpersist() method.
 
-Shared Variables
+## Shared Variables
 Normally, when a function passed to a Spark operation (such as map or reduce) is executed on a remote cluster node, it works on separate copies of all the variables used in the function. These variables are copied to each machine, and no updates to the variables on the remote machine are propagated back to the driver program. Supporting general, read-write shared variables across tasks would be inefficient. However, Spark does provide two limited types of shared variables for two common usage patterns: broadcast variables and accumulators.
 
-Broadcast Variables
+## Broadcast Variables
 Broadcast variables allow the programmer to keep a read-only variable cached on each machine rather than shipping a copy of it with tasks. They can be used, for example, to give every node a copy of a large input dataset in an efficient manner. Spark also attempts to distribute broadcast variables using efficient broadcast algorithms to reduce communication cost.
 
 Spark actions are executed through a set of stages, separated by distributed “shuffle” operations. Spark automatically broadcasts the common data needed by tasks within each stage. The data broadcasted this way is cached in serialized form and deserialized before running each task. This means that explicitly creating broadcast variables is only useful when tasks across multiple stages need the same data or when caching the data in deserialized form is important.
 
 Broadcast variables are created from a variable v by calling SparkContext.broadcast(v). The broadcast variable is a wrapper around v, and its value can be accessed by calling the value method. The code below shows this:
 
-Scala
-Java
-Python
+```python
 >>> broadcastVar = sc.broadcast([1, 2, 3])
 <pyspark.broadcast.Broadcast object at 0x102789f10>
 
 >>> broadcastVar.value
 [1, 2, 3]
+```
+
 After the broadcast variable is created, it should be used instead of the value v in any functions run on the cluster so that v is not shipped to the nodes more than once. In addition, the object v should not be modified after it is broadcast in order to ensure that all nodes get the same value of the broadcast variable (e.g. if the variable is shipped to a new node later).
 
-Accumulators
+## Accumulators
 Accumulators are variables that are only “added” to through an associative and commutative operation and can therefore be efficiently supported in parallel. They can be used to implement counters (as in MapReduce) or sums. Spark natively supports accumulators of numeric types, and programmers can add support for new types.
 
 As a user, you can create named or unnamed accumulators. As seen in the image below, a named accumulator (in this instance counter) will display in the web UI for the stage that modifies that accumulator. Spark displays the value for each accumulator modified by a task in the “Tasks” table.
 
-Accumulators in the Spark UI
+## Accumulators in the Spark UI
 
 Tracking accumulators in the UI can be useful for understanding the progress of running stages (NOTE: this is not yet supported in Python).
 
-Scala
-Java
-Python
 An accumulator is created from an initial value v by calling SparkContext.accumulator(v). Tasks running on a cluster can then add to it using the add method or the += operator. However, they cannot read its value. Only the driver program can read the accumulator’s value, using its value method.
 
 The code below shows an accumulator being used to add up the elements of an array:
 
+```python
 >>> accum = sc.accumulator(0)
 >>> accum
 Accumulator<id=0, value=0>
@@ -558,8 +666,11 @@ Accumulator<id=0, value=0>
 
 >>> accum.value
 10
+```
+
 While this code used the built-in support for accumulators of type Int, programmers can also create their own types by subclassing AccumulatorParam. The AccumulatorParam interface has two methods: zero for providing a “zero value” for your data type, and addInPlace for adding two values together. For example, supposing we had a Vector class representing mathematical vectors, we could write:
 
+```python
 class VectorAccumulatorParam(AccumulatorParam):
     def zero(self, initialValue):
         return Vector.zeros(initialValue.size)
@@ -570,6 +681,7 @@ class VectorAccumulatorParam(AccumulatorParam):
 
 # Then, create an Accumulator of this type:
 vecAccum = sc.accumulator(Vector(...), VectorAccumulatorParam())
+```
 For accumulator updates performed inside actions only, Spark guarantees that each task’s update to the accumulator will only be applied once, i.e. restarted tasks will not update the value. In transformations, users should be aware of that each task’s update may be applied more than once if tasks or job stages are re-executed.
 
 Accumulators do not change the lazy evaluation model of Spark. If they are being updated within an operation on an RDD, their value is only updated once that RDD is computed as part of an action. Consequently, accumulator updates are not guaranteed to be executed when made within a lazy transformation like map(). The below code fragment demonstrates this property:
@@ -583,18 +695,18 @@ data.map(g)
 # Here, accum is still 0 because no actions have caused the `map` to be computed.
 ```
 
-Deploying to a Cluster
+## Deploying to a Cluster
 The application submission guide describes how to submit applications to a cluster. In short, once you package your application into a JAR (for Java/Scala) or a set of .py or .zip files (for Python), the bin/spark-submit script lets you submit it to any supported cluster manager.
 
-Launching Spark jobs from Java / Scala
+## Launching Spark jobs from Java / Scala
 The org.apache.spark.launcher package provides classes for launching Spark jobs as child processes using a simple Java API.
 
-Unit Testing
+## Unit Testing
 Spark is friendly to unit testing with any popular unit test framework. Simply create a SparkContext in your test with the master URL set to local, run your operations, and then call SparkContext.stop() to tear it down. Make sure you stop the context within a finally block or the test framework’s tearDown method, as Spark does not support two contexts running concurrently in the same program.
 
-Where to Go from Here
+## Where to Go from Here
 You can see some example Spark programs on the Spark website. In addition, Spark includes several samples in the examples directory (Scala, Java, Python, R). You can run Java and Scala examples by passing the class name to Spark’s bin/run-example script; for instance:
-
+```shell
 ./bin/run-example SparkPi
 For Python examples, use spark-submit instead:
 
@@ -602,6 +714,7 @@ For Python examples, use spark-submit instead:
 For R examples, use spark-submit instead:
 
 ./bin/spark-submit examples/src/main/r/dataframe.R
+```
 For help on optimizing your programs, the configuration and tuning guides provide information on best practices. They are especially important for making sure that your data is stored in memory in an efficient format. For help on deploying, the cluster mode overview describes the components involved in distributed operation and supported cluster managers.
 
 Finally, full API documentation is available in Scala, Java, Python and R.
